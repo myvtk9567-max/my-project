@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <title>Em yêu anh ❤️</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Three.js + QRCode.js -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+  <style>
+    body,html { margin:0; padding:0; overflow:hidden; background:#000; }
+    #qr {
+      position: fixed;
+      bottom: 20px; right: 20px;
+      background: rgba(255,255,255,0.8);
+      padding: 10px;
+      border-radius: 12px;
+    }
+    #music {
+      position: fixed;
+      top: 20px; left: 20px;
+      z-index: 10;
+    }
+  </style>
+</head>
+<body>
+  <!-- Nhạc nền -->
+  <audio id="music" controls autoplay loop>
+    <source src="https://cdn.pixabay.com/download/audio/2023/06/15/audio_61f8658c9b.mp3?filename=romantic-piano-144397.mp3" type="audio/mpeg">
+  </audio>
+
+  <!-- QR Code -->
+  <div id="qr"></div>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+    import { FontLoader } from "three/addons/loaders/FontLoader.js";
+    import { TextGeometry } from "three/addons/geometries/TextGeometry.js";
+
+    let scene, camera, renderer, controls, stars;
+    let hearts = [];
+    let targetPoints = [];
+    let clock = new THREE.Clock();
+
+    init();
+    animate();
+
+    function init(){
+      scene = new THREE.Scene();
+
+      camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 2000);
+      camera.position.set(0,0,200);
+
+      renderer = new THREE.WebGLRenderer({antialias:true});
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(renderer.domElement);
+
+      controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+
+      // Ánh sáng
+      scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+      const point = new THREE.PointLight(0xff80ff, 2, 500);
+      point.position.set(50,50,50);
+      scene.add(point);
+
+      // Tạo sao
+      const starGeo = new THREE.BufferGeometry();
+      const starCount = 3000;
+      const pos = [];
+      for(let i=0;i<starCount;i++){
+        pos.push((Math.random()-0.5)*1000);
+        pos.push((Math.random()-0.5)*1000);
+        pos.push((Math.random()-0.5)*1000);
+      }
+      starGeo.setAttribute("position", new THREE.Float32BufferAttribute(pos,3));
+      const starMat = new THREE.PointsMaterial({color:0xffffff, size:1});
+      stars = new THREE.Points(starGeo, starMat);
+      scene.add(stars);
+
+      // Load font và tạo điểm cho chữ
+      const loader = new FontLoader();
+      loader.load("https://threejs.org/examples/fonts/helvetiker_regular.typeface.json", font=>{
+        const textGeo = new TextGeometry("Em yêu anh, hôm nay anh đã vất vả rồi, anh làm tốt lắm 💖", {
+          font: font,
+          size: 8,
+          height: 2,
+          curveSegments: 4
+        });
+        textGeo.center();
+
+        // Lấy điểm từ geometry chữ
+        const temp = new THREE.BufferGeometry().fromGeometry(textGeo);
+        const positions = temp.attributes.position.array;
+
+        for(let i=0;i<positions.length;i+=3){
+          targetPoints.push(new THREE.Vector3(
+            positions[i],
+            positions[i+1],
+            positions[i+2]
+          ));
+        }
+
+        // Tạo trái tim nhỏ
+        const heartShape = new THREE.Shape();
+        heartShape.moveTo(0, 5);
+        heartShape.bezierCurveTo(5, 15, 25, 15, 25, 5);
+        heartShape.bezierCurveTo(25, -5, 12.5, -12, 0, -25);
+        heartShape.bezierCurveTo(-12.5, -12, -25, -5, -25, 5);
+        heartShape.bezierCurveTo(-25, 15, -5, 15, 0, 5);
+
+        const heartGeo = new THREE.ExtrudeGeometry(heartShape, {depth:2,bevelEnabled:false});
+        const heartMat = new THREE.MeshStandardMaterial({color:0xff77ff,emissive:0xff22aa,emissiveIntensity:1});
+
+        // Số lượng trái tim
+        const count = 400;
+        for(let i=0;i<count;i++){
+          const heart = new THREE.Mesh(heartGeo, heartMat.clone());
+          heart.scale.set(0.05,0.05,0.05);
+          heart.position.set(
+            (Math.random()-0.5)*400,
+            Math.random()*200+100,
+            (Math.random()-0.5)*100
+          );
+          heart.userData = {speed: 0.5+Math.random()};
+          scene.add(heart);
+          hearts.push(heart);
+        }
+      });
+
+      window.addEventListener("resize", onResize);
+
+      // QR Code
+      QRCode.toCanvas(document.getElementById("qr"), window.location.href, {width:120});
+    }
+
+    function animate(){
+      requestAnimationFrame(animate);
+      const t = clock.getElapsedTime();
+
+      stars.rotation.y += 0.0005;
+
+      // Cập nhật trái tim
+      if(targetPoints.length>0){
+        hearts.forEach((h,i)=>{
+          if(h.position.y>0){
+            h.position.y -= h.userData.speed;
+          }else{
+            // Di chuyển dần vào điểm chữ
+            const target = targetPoints[i % targetPoints.length];
+            h.position.lerp(target, 0.02);
+          }
+          h.rotation.y += 0.02;
+        });
+      }
+
+      controls.update();
+      renderer.render(scene,camera);
+    }
+
+    function onResize(){
+      camera.aspect = window.innerWidth/window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth,window.innerHeight);
+    }
+  </script>
+</body>
+</html>
