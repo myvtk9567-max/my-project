@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Text → Heart Animation</title>
+<style>
+  html,body{
+    height:100%;
+    margin:0;
+    background: radial-gradient(circle at 30% 10%, #111 0%, #07020a 30%, #000 100%);
+    overflow:hidden;
+    font-family: "Segoe UI", Roboto, "Helvetica Neue", Arial;
+  }
+  canvas { display:block; }
+  .ui {
+    position: fixed;
+    left: 12px;
+    top: 12px;
+    z-index: 9;
+    color: #fff;
+    font-size: 13px;
+    backdrop-filter: blur(6px);
+  }
+  .ui input { padding:6px 8px; border-radius:6px; border:1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.03); color:#fff; }
+  .ui button { margin-left:8px; padding:6px 8px; border-radius:6px; border:1px solid rgba(255,255,255,0.06); background: rgba(255,255,255,0.04); color:#fff; cursor:pointer; }
+  .hint { color: #bbb; font-size:12px; margin-top:6px; }
+</style>
+</head>
+<body>
+<div class="ui">
+  <label>Text: <input id="txt" value="I ♥ YOU" /></label>
+  <label style="margin-left:8px">Font size: <input id="fsize" type="number" value="26" style="width:64px"/></label>
+  <button id="restart">Render</button>
+  <div class="hint">Mở rộng/thu nhỏ cửa sổ để reflow. Click để thêm "thiên thạch".</div>
+</div>
+
+<canvas id="c"></canvas>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d', {alpha:true});
+  let W = canvas.width = innerWidth;
+  let H = canvas.height = innerHeight;
+  const DPR = Math.max(1, window.devicePixelRatio || 1);
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  canvas.style.width = W + "px"; canvas.style.height = H + "px";
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+
+  const inputText = document.getElementById('txt');
+  const fsizeInput = document.getElementById('fsize');
+  const restartBtn = document.getElementById('restart');
+
+  // PARAMETERS
+  let MESSAGE = inputText.value || "I ♥ YOU";
+  let BASE_FONT_SIZE = parseInt(fsizeInput.value) || 26;
+  const PARTICLE_GAP = 1; // spacing inside text-to-points sampling
+  const GRAVITY = 0.12;
+
+  // particle arrays
+  let particles = [];
+  let heartTargets = [];
+  let meteors = [];
+
+  // helpers
+  function rand(a=0,b=1){ return a + Math.random()*(b-a); }
+  function easeOutCubic(t){ return 1 - Math.pow(1-t,3); }
+  function resize(){
+    W = canvas.width = innerWidth;
+    H = canvas.height = innerHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR;
+    canvas.style.width = W + "px"; canvas.style.height = H + "px";
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    rebuild();
+  }
+
+  // Create parametric heart curve sample points
+  function buildHeartPoints(count, scale){
+    // parametric heart: x = 16 sin^3(t), y = 13 cos(t) - 5 cos(2t) - 2 cos(3t) - cos(4t)
+    const pts = [];
+    for(let i=0;i<count;i++){
+      const t = (i / count) * Math.PI * 2;
+      const x = 16*Math.pow(Math.sin(t),3);
+      const y = 13*Math.cos(t) - 5*Math.cos(2*t) - 2*Math.cos(3*t) - Math.cos(4*t);
+      pts.push({x,y});
+    }
+    // scale & center
+    const xs = pts.map(p=>p.x), ys = pts.map(p=>p.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const w = maxX - minX, h = maxY - minY;
+    const s = scale / Math.max(w, h);
+    const cx = W/2, cy = H/2 - (H*0.05);
+    return pts.map(p => ({ x: cx + (p.x - (minX + w/2)) * s, y: cy + (p.y - (minY + h/2)) * s }));
+  }
+
+  // Sample message into points (render text to offscreen canvas and sample pixels)
+  function sampleTextToPoints(message, fontSize){
+    const off = document.createElement('canvas');
+    const g = off.getContext('2d');
+    // temporary large canvas
+    off.width = Math.max(200, message.length * fontSize * 1.2);
+    off.height = Math.max(80, fontSize * 3);
+    g.fillStyle = 'black';
+    g.fillRect(0,0,off.width,off.height);
+    g.font = `${fontSize}px "Segoe UI", Roboto, Arial`;
+    g.textBaseline = 'middle';
+    g.textAlign = 'center';
+    g.fillStyle = 'white';
+    g.fillText(message, off.width/2, off.height/2 + fontSize*0.05);
+
+    const img = g.getImageData(0,0,off.width,off.height);
+    const points = [];
+    for(let y=0;y<off.height;y+=Math.max(1, Math.floor(fontSize/8))){
+      for(let x=0;x<off.width;x+=Math.max(1, Math.floor(fontSize/8))){
+        const idx = (y*off.width + x)*4;
+        const alpha = img.data[idx+3];
+        if(alpha > 128){
+          // push center-relative points so we can map to heart later
+          points.push({x: x - off.width/2, y: y - off.height/2});
+        }
+      }
+    }
+    return points;
+  }
+
+  // Build target positions on heart using message-sampled points
+  function buildTargetsFromText(message, fontSize){
+    const textPoints = sampleTextToPoints(message, fontSize);
+    if(textPoints.length === 0) return [];
+    // Build a heart curve sample large enough, then map textPoints onto heart area by scaling & rotation
+    // We'll map the bounding box of textPoints to the internal heart bounding box region.
+    const heartPts = buildHeartPoints(1200, Math.min(W,H) * 0.6);
+    // convert heartPts to polygon fill sampling: build simple grid and pick inner points using winding rule approximation (draw to offscreen)
+    const off = document.createElement('canvas');
+    const g = off.getContext('2d');
+    off.width = W; off.height = H;
+    g.clearRect(0,0,off.width,off.height);
+    g.beginPath();
+    // draw heart shape parametric
+    const steps = 400;
+    for(let i=0;i<steps;i++){
+      const t = i / steps * Math.PI * 2;
+      const x = 16*Math.pow(Math.sin(t),3);
+      const y = 13*Math.cos(t) - 5*Math.cos(2*t) - 2*Math.cos(3*t) - Math.cos(4*t);
+      const sx = W/2 + x * (Math.min(W,H)*0.02);
+      const sy = H/2 - y * (Math.min(W,H)*0.02);
+      if(i===0) g.moveTo(sx,sy); else g.lineTo(sx,sy);
+    }
+    g.closePath();
+    g.fillStyle = '#fff';
+    g.fill();
+
+    // get bounding boxes of textPoints
+    const xs = textPoints.map(p=>p.x), ys = textPoints.map(p=>p.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const tW = maxX - minX, tH = maxY - minY;
+
+    // Try to place each text point into a valid pixel of the heart fill. We scan the heart canvas for white pixels and sample positions.
+    const heartData = g.getImageData(0,0,off.width,off.height);
+    const whitePixels = [];
+    for(let y=0;y<off.height;y+=2){
+      for(let x=0;x<off.width;x+=2){
+        const idx = (y*off.width + x)*4;
+        if(heartData.data[idx+3] > 128){
+          whitePixels.push({x,y});
+        }
+      }
+    }
+    // If not enough white pixels, fallback to curve points
+    if(whitePixels.length < textPoints.length){
+      // map textPoints to sampled heart curve points
+      const curve = buildHeartPoints(textPoints.length, Math.min(W,H)*0.6);
+      return curve;
+    }
+
+    // Now map each text point into a location chosen among whitePixels in a deterministic (but shuffled) way
+    // scale text bounding box to a region inside heart bounding box
+    // compute heart bbox:
+    const hx = whitePixels.map(p=>p.x), hy = whitePixels.map(p=>p.y);
+    const hminX = Math.min(...hx), hmaxX = Math.max(...hx), hminY = Math.min(...hy), hmaxY = Math.max(...hy);
+    const hW = hmaxX - hminX, hH = hmaxY - hminY;
+
+    // Normalize text points to 0..1 and map to heart area
+    const targets = [];
+    for(let i=0;i<textPoints.length;i++){
+      const p = textPoints[i];
+      const nx = (p.x - minX) / (tW || 1);
+      const ny = (p.y - minY) / (tH || 1);
+      // choose candidate pixel near mapped pos
+      const tx = Math.floor(hminX + nx * hW + rand(-2,2));
+      const ty = Math.floor(hminY + ny * hH + rand(-2,2));
+      // clamp and find nearest white pixel (linear search small radius)
+      let found = null;
+      const radius = 6;
+      for(let r=0;r<=radius && !found;r++){
+        for(let ay=-r; ay<=r && !found; ay++){
+          for(let ax=-r; ax<=r && !found; ax++){
+            const sx = tx + ax, sy = ty + ay;
+            if(sx<0||sx>=off.width||sy<0||sy>=off.height) continue;
+            const idx = (sy*off.width + sx)*4;
+            if(heartData.data[idx+3] > 128){
+              found = {x: sx + rand(-0.4,0.4), y: sy + rand(-0.4,0.4)};
+            }
+          }
+        }
+      }
+      if(!found) found = whitePixels[Math.floor(rand(0,whitePixels.length))];
+      targets.push(found);
+    }
+
+    // Shuffle targets a bit so letters don't align exactly in raster order
+    for(let i=0;i<targets.length;i++){
+      const j = Math.floor(rand(0,targets.length));
+      [targets[i], targets[j]] = [targets[j], targets[i]];
+    }
+    return targets;
+  }
+
+  // Particle class: each corresponds to one character
+  class Particle {
+    constructor(char, startX, startY, targetX, targetY, delay){
+      this.char = char;
+      this.x = startX;
+      this.y = startY;
+      this.vx = rand(-1.5,1.5);
+      this.vy = rand(-2,1);
+      this.tx = targetX;
+      this.ty = targetY;
+      this.delay = delay; // when to start moving toward target
+      this.life = 0;
+      this.alpha = 0;
+      this.arrived = false;
+      this.rot = rand(-0.6,0.6);
+      this.size = BASE_FONT_SIZE;
+      this.wobble = rand(0,1000);
+    }
+    update(dt){
+      this.life += dt;
+      if(this.life < this.delay){
+        // free fall / float before activation
+        this.vy += GRAVITY * dt * 15;
+        this.x += this.vx * dt * 40;
+        this.y += this.vy * dt * 40;
+        this.alpha = Math.min(1, this.alpha + 0.02);
+        return;
+      }
+      const tnorm = Math.min(1, (this.life - this.delay) / 1.2);
+      const e = easeOutCubic(tnorm);
+      // simple ease move toward target from current pos (or from spawn pos)
+      // to avoid teleport, compute start as where it is when starting
+      const sx = this.x;
+      const sy = this.y;
+      // actually lerp from current position to target based on e (smooth)
+      this.x = sx + (this.tx - sx) * (0.08 + 0.92 * e);
+      this.y = sy + (this.ty - sy) * (0.08 + 0.92 * e);
+      this.alpha = Math.min(1, 0.2 + 1.8 * e);
+      this.rot *= 0.98;
+      // small perpetual wobble once arrived
+      if(tnorm >= 0.98) {
+        this.arrived = true;
+        this.x += Math.sin((this.life + this.wobble) * 2.0) * 0.3;
+        this.y += Math.cos((this.life + this.wobble) * 1.8) * 0.3;
+      }
+    }
+    draw(ctx){
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, this.alpha);
+      ctx.font = `${this.size}px "Segoe UI", Roboto, Arial`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      // gradient fill for characters
+      const grad = ctx.createLinearGradient(this.x-10, this.y-10, this.x+10, this.y+10);
+      grad.addColorStop(0, 'rgba(255,150,180,0.95)');
+      grad.addColorStop(0.5, 'rgba(255,100,150,0.95)');
+      grad.addColorStop(1, 'rgba(255,60,120,0.95)');
+      ctx.fillStyle = grad;
+      ctx.translate(this.x, this.y);
+      ctx.rotate(this.rot);
+      ctx.fillText(this.char, 0, 0);
+      ctx.restore();
+    }
+  }
+
+  // Meteor hearts for background dynamic
+  class Meteor {
+    constructor(){
+      this.x = rand(-W*0.2, W*1.2);
+      this.y = rand(-H*0.2, H*0.2);
+      this.vx = rand(-6,-2);
+      this.vy = rand(1,4);
+      this.life = 0;
+      this.size = rand(6,16);
+      this.alpha = rand(0.6,1);
+      this.spin = rand(-0.6,0.6);
+    }
+    update(dt){
+      this.life += dt;
+      this.x += this.vx * dt * 60;
+      this.y += this.vy * dt * 60;
+      if(this.x < -W*0.3 || this.y > H*1.3) this.reset();
+    }
+    reset(){ Object.assign(this, new Meteor()); }
+    draw(ctx){
+      ctx.save();
+      ctx.globalAlpha = this.alpha * 0.9;
+      ctx.translate(this.x, this.y);
+      ctx.rotate(this.spin);
+      drawHeart(ctx, 0, 0, this.size);
+      ctx.restore();
+    }
+  }
+
+  function drawHeart(ctx, cx, cy, size){
+    ctx.beginPath();
+    const s = size/16;
+    // simple heart path
+    ctx.moveTo(cx, cy - 4*s);
+    ctx.bezierCurveTo(cx + 12*s, cy - 28*s, cx + 32*s, cy - 8*s, cx, cy + 18*s);
+    ctx.bezierCurveTo(cx - 32*s, cy - 8*s, cx - 12*s, cy - 28*s, cx, cy - 4*s);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(255,90,130,0.85)';
+    ctx.fill();
+  }
+
+  // Build particles and targets
+  function rebuild(){
+    particles = [];
+    heartTargets = [];
+    meteors = [];
+    MESSAGE = inputText.value || MESSAGE;
+    BASE_FONT_SIZE = parseInt(fsizeInput.value) || BASE_FONT_SIZE;
+
+    // 1) Get targets from text-mapped-to-heart
+    const targets = buildTargetsFromText(MESSAGE, Math.max(12, BASE_FONT_SIZE));
+    // Create characters array from MESSAGE, repeating or splitting if needed:
+    const chars = [];
+    // We'll generate as many particles as targets; cycle through message characters
+    for(let i=0;i<targets.length;i++){
+      const ch = MESSAGE[i % MESSAGE.length];
+      chars.push(ch);
+    }
+
+    // Create particle objects; spawn them from random positions above screen
+    const now = performance.now() / 1000;
+    for(let i=0;i<targets.length;i++){
+      const t = targets[i];
+      const spawnX = rand(W*0.15, W*0.85);
+      const spawnY = rand(-H*0.6, -20);
+      // staggered delay so letters come sequentially
+      const delay = 0.05 * i + rand(0,0.12);
+      const p = new Particle(chars[i], spawnX, spawnY, t.x, t.y, delay);
+      // small variation in font size per char
+      p.size = Math.floor(BASE_FONT_SIZE * rand(0.85,1.15));
+      particles.push(p);
+    }
+
+    // add some meteors
+    for(let i=0;i<10;i++) meteors.push(new Meteor());
+  }
+
+  // Animation loop
+  let last = performance.now();
+  function frame(){
+    const now = performance.now();
+    const dt = Math.min(0.06, (now - last)/1000);
+    last = now;
+    // background fade
+    ctx.clearRect(0,0,W,H);
+    // subtle background gradient
+    const g = ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0, 'rgba(8,4,12,0.35)');
+    g.addColorStop(1, 'rgba(0,0,0,0.7)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,W,H);
+
+    // draw meteors behind
+    for(let m of meteors){
+      m.update(dt);
+      m.draw(ctx);
+    }
+
+    // update & draw particles
+    for(let i=0;i<particles.length;i++){
+      const p = particles[i];
+      p.update(dt);
+      p.draw(ctx);
+    }
+
+    // overlay soft glow heart center for extra effect
+    const glowRad = Math.min(W,H)*0.35;
+    const gx = ctx.createRadialGradient(W/2, H/2, glowRad*0.1, W/2, H/2, glowRad);
+    gx.addColorStop(0, 'rgba(255,80,140,0.08)');
+    gx.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = gx;
+    ctx.fillRect(0,0,W,H);
+
+    requestAnimationFrame(frame);
+  }
+
+  // initial build & run
+  rebuild();
+  requestAnimationFrame(frame);
+
+  // interactions
+  window.addEventListener('resize', () => { resize(); });
+  restartBtn.addEventListener('click', ()=> { rebuild(); });
+  canvas.addEventListener('click', (e)=>{
+    // add a meteor at click pos
+    const m = new Meteor();
+    m.x = e.clientX; m.y = e.clientY;
+    m.vx = rand(-8,-3); m.vy = rand(2,6); m.size = rand(8,26);
+    meteors.push(m);
+    if(meteors.length>40) meteors.splice(0, meteors.length-40);
+  });
+
+})();
+</script>
+</body>
+</html>
