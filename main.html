@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Heart Meteors</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter&display=swap" rel="stylesheet" />
+
+  <style>
+    html, body, #container, canvas {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    body {
+      font-family: "Inter", sans-serif;
+      overflow: hidden;
+      background: #040307;
+      background-image:
+        radial-gradient(circle at 50% 35%, #1d1431 0%, transparent 65%),
+        linear-gradient(180deg, #000000 0%, #070012 100%);
+      color: #eee;
+    }
+
+    .vignette {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 9;
+      background: radial-gradient(circle at center, rgba(0,0,0,0) 65%, rgba(0,0,0,.5) 100%);
+    }
+
+    /* Chữ rơi từng ký tự */
+    .love-message {
+      position: fixed;
+      bottom: 80px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 22px;
+      font-weight: bold;
+      color: #ffb7f9;
+      text-shadow: 0 0 12px #ff4df2, 0 0 24px #ff4df2;
+      z-index: 20;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .love-message span {
+      opacity: 0;
+      display: inline-block;
+      transform: translateY(-100px);
+      animation: dropLetters 0.8s ease forwards;
+    }
+
+    @keyframes dropLetters {
+      0% { opacity: 0; transform: translateY(-100px) rotate(15deg); }
+      80% { opacity: 1; transform: translateY(10px) rotate(-5deg); }
+      100% { opacity: 1; transform: translateY(0) rotate(0deg); }
+    }
+  </style>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="container"></div>
+  <div class="vignette"></div>
+  <div class="love-message" id="love-message"></div>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+    import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+    import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+    import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+    import { AfterimagePass } from "three/addons/postprocessing/AfterimagePass.js";
+    import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+    import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+    let scene, camera, renderer, composer, controls, stars, heartModel;
+    const meteors = [];
+    const clock = new THREE.Clock();
+
+    /* --- Hiệu ứng chữ rơi --- */
+    const message = "Hôm nay anh đã vất vả rồi, anh là giỏi nhất, em yêu anh";
+    const containerMsg = document.getElementById("love-message");
+    message.split("").forEach((ch, i) => {
+      const span = document.createElement("span");
+      span.textContent = ch;
+      span.style.animationDelay = `${i * 0.1 + 1.5}s`;
+      containerMsg.appendChild(span);
+    });
+
+    /* --- Sao lấp lánh --- */
+    function createStars() {
+      const geo = new THREE.BufferGeometry();
+      const count = 7000, RADIUS = 900;
+      const pos = new Float32Array(count * 3);
+      const col = new Float32Array(count * 3);
+
+      for (let i = 0; i < count; i++) {
+        const i3 = i * 3;
+        const θ = Math.random() * 2 * Math.PI;
+        const φ = Math.acos(2 * Math.random() - 1);
+        const r = RADIUS * Math.cbrt(Math.random());
+
+        pos[i3]     = r * Math.sin(φ) * Math.cos(θ);
+        pos[i3 + 1] = r * Math.sin(φ) * Math.sin(θ);
+        pos[i3 + 2] = r * Math.cos(φ);
+
+        const c = new THREE.Color().setHSL(Math.random() * 0.6, 0.3, 0.7);
+        col.set([c.r, c.g, c.b], i3);
+      }
+
+      geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+      geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+
+      const mat = new THREE.PointsMaterial({
+        size: 1.5,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.9
+      });
+
+      return new THREE.Points(geo, mat);
+    }
+
+    /* --- Trái tim chính --- */
+    function addHeartModel() {
+      const loader = new GLTFLoader();
+      loader.load(
+        "https://assets.codepen.io/74321/heart.glb",
+        gltf => {
+          heartModel = gltf.scene.children[0];
+          heartModel.scale.set(10, 10, 10);
+          heartModel.position.set(0, 0, 0);
+          heartModel.material = new THREE.MeshStandardMaterial({
+            color: 0xFFD6F6,
+            emissive: 0xFF79FB,
+            emissiveIntensity: 3.5,
+            metalness: 0.9,
+            roughness: 0.1
+          });
+          scene.add(heartModel);
+        }
+      );
+    }
+
+    /* --- Thiên thạch trái tim --- */
+    function createHeartMeteor() {
+      const shape = new THREE.Shape();
+      shape.moveTo(0, 0);
+      shape.bezierCurveTo(0, 0.5, -0.5, 0.5, -0.5, 0);
+      shape.bezierCurveTo(-0.5, -0.5, 0, -0.7, 0, -1);
+      shape.bezierCurveTo(0, -0.7, 0.5, -0.5, 0.5, 0);
+      shape.bezierCurveTo(0.5, 0.5, 0, 0.5, 0, 0);
+
+      const geo = new THREE.ExtrudeGeometry(shape, { depth: 0.3, bevelEnabled: false });
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0xff4df2,
+        emissive: 0xff0077,
+        emissiveIntensity: 2,
+        metalness: 0.6,
+        roughness: 0.3
+      });
+
+      const heart = new THREE.Mesh(geo, mat);
+      heart.scale.set(3, 3, 3);
+      heart.position.set(-200, Math.random() * 150 - 75, -50);
+
+      // Trail sáng
+      const curve = new THREE.CatmullRomCurve3([
+        new THREE.Vector3(heart.position.x, heart.position.y, -50),
+        new THREE.Vector3(heart.position.x + 100, heart.position.y + (Math.random() * 40 - 20), -50)
+      ]);
+      const tubeGeo = new THREE.TubeGeometry(curve, 20, 0.5, 8, false);
+      const tubeMat = new THREE.MeshBasicMaterial({
+        color: 0xff77ff,
+        transparent: true,
+        opacity: 0.8
+      });
+      const trail = new THREE.Mesh(tubeGeo, tubeMat);
+
+      scene.add(heart);
+      scene.add(trail);
+
+      meteors.push({
+        mesh: heart,
+        trail,
+        speed: 2 + Math.random() * 2,
+        life: 0
+      });
+    }
+
+    function spawnMeteors() {
+      if (Math.random() < 0.05) { // nhiều thiên thạch hơn
+        createHeartMeteor();
+      }
+    }
+
+    /* --- Init --- */
+    function init() {
+      const w = innerWidth, h = innerHeight;
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(60, w/h, 0.1, 2500);
+      camera.position.set(0, 0, 80);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(w, h);
+      document.getElementById("container").appendChild(renderer.domElement);
+
+      controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.autoRotate = true;
+      controls.autoRotateSpeed = 0.5;
+
+      stars = createStars();
+      scene.add(stars);
+
+      addHeartModel();
+
+      const light = new THREE.PointLight(0xff77ff, 1.5, 500);
+      light.position.set(50, 50, 100);
+      scene.add(light);
+
+      composer = new EffectComposer(renderer);
+      composer.addPass(new RenderPass(scene, camera));
+      composer.addPass(new UnrealBloomPass(new THREE.Vector2(w, h), 0.45, 0.5, 0.85));
+      composer.addPass(new AfterimagePass());
+      composer.addPass(new OutputPass());
+
+      window.addEventListener("resize", () => {
+        const w = innerWidth, h = innerHeight;
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+        renderer.setSize(w, h);
+        composer.setSize(w, h);
+      });
+    }
+
+    /* --- Animate --- */
+    function animate() {
+      requestAnimationFrame(animate);
+      const t = clock.getElapsedTime();
+      controls.update();
+
+      // quay trái tim chính
+      if (heartModel) heartModel.rotation.y += 0.01;
+
+      spawnMeteors();
+
+      // update thiên thạch
+      for (let i = meteors.length - 1; i >= 0; i--) {
+        const m = meteors[i];
+        m.mesh.position.x += m.speed * 2;
+        m.trail.material.opacity -= 0.01;
+        m.life += 1;
+
+        if (m.mesh.position.x > 200 || m.trail.material.opacity <= 0) {
+          scene.remove(m.mesh);
+          scene.remove(m.trail);
+          meteors.splice(i, 1);
+        }
+      }
+
+      composer.render();
+    }
+
+    init();
+    animate();
+  </script>
+</body>
+</html>
