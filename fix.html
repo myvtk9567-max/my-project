@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Heart Animation</title>
+  <title>Heart Animation + Love Message</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -35,7 +35,7 @@
       background: radial-gradient(circle at center, rgba(0,0,0,0) 65%, rgba(0,0,0,.5) 100%);
     }
 
-    /* Dòng chữ hiển thị dưới trái tim */
+    /* Hiệu ứng chữ rơi từng ký tự */
     .love-message {
       position: fixed;
       bottom: 80px;
@@ -45,15 +45,23 @@
       font-weight: bold;
       color: #ffb7f9;
       text-shadow: 0 0 12px #ff4df2, 0 0 24px #ff4df2;
-      opacity: 0;
-      animation: fadeInText 6s ease forwards;
-      animation-delay: 2s; /* xuất hiện sau 2s */
       z-index: 20;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
     }
 
-    @keyframes fadeInText {
-      0% { opacity: 0; transform: translateX(-50%) translateY(20px); }
-      100% { opacity: 1; transform: translateX(-50%) translateY(0); }
+    .love-message span {
+      opacity: 0;
+      display: inline-block;
+      transform: translateY(-100px);
+      animation: dropLetters 0.8s ease forwards;
+    }
+
+    @keyframes dropLetters {
+      0% { opacity: 0; transform: translateY(-100px) rotate(15deg); }
+      80% { opacity: 1; transform: translateY(10px) rotate(-5deg); }
+      100% { opacity: 1; transform: translateY(0) rotate(0deg); }
     }
   </style>
 
@@ -69,10 +77,8 @@
 <body>
   <div id="container"></div>
   <div class="vignette"></div>
-  <!-- Thêm dòng chữ tình cảm -->
-  <div class="love-message">
-    Hôm nay anh đã vất vả rồi, anh là giỏi nhất, em yêu anh
-  </div>
+  <!-- Dòng chữ -->
+  <div class="love-message" id="love-message"></div>
 
   <script type="module">
     import * as THREE from "three";
@@ -87,8 +93,21 @@
     const STAR_COUNT = 7000;
     const RADIUS = 900;
     let scene, camera, renderer, composer, controls, stars, heartModel;
+    let meteors = [];
     const clock = new THREE.Clock();
 
+    /* ------------------ HIỆU ỨNG CHỮ ------------------ */
+    const message = "Hôm nay anh đã vất vả rồi, anh là giỏi nhất, em yêu anh";
+    const containerMsg = document.getElementById("love-message");
+
+    message.split("").forEach((ch, i) => {
+      const span = document.createElement("span");
+      span.textContent = ch;
+      span.style.animationDelay = `${i * 0.1 + 1.5}s`;
+      containerMsg.appendChild(span);
+    });
+
+    /* ------------------ SAO LẤP LÁNH ------------------ */
     function createStars() {
       const geo = new THREE.BufferGeometry();
       const pos = new Float32Array(STAR_COUNT * 3);
@@ -155,6 +174,7 @@
       return new THREE.Points(geo, mat);
     }
 
+    /* ------------------ TRÁI TIM CHÍNH ------------------ */
     function addHeartModel() {
       const loader = new GLTFLoader();
       loader.load(
@@ -175,6 +195,45 @@
       );
     }
 
+    /* ------------------ THIÊN THẠCH TRÁI TIM ------------------ */
+    function createHeartMeteor() {
+      const shape = new THREE.Shape();
+      shape.moveTo(0, 0);
+      shape.bezierCurveTo(0, 0.5, -0.5, 0.5, -0.5, 0);
+      shape.bezierCurveTo(-0.5, -0.5, 0, -0.7, 0, -1);
+      shape.bezierCurveTo(0, -0.7, 0.5, -0.5, 0.5, 0);
+      shape.bezierCurveTo(0.5, 0.5, 0, 0.5, 0, 0);
+
+      const geometry = new THREE.ExtrudeGeometry(shape, { depth: 0.2, bevelEnabled: false });
+      const material = new THREE.MeshStandardMaterial({
+        color: 0xff4df2,
+        emissive: 0xff0077,
+        emissiveIntensity: 2,
+        metalness: 0.6,
+        roughness: 0.3
+      });
+
+      const heart = new THREE.Mesh(geometry, material);
+      heart.scale.set(2, 2, 2);
+      heart.position.set(-200, Math.random() * 150 - 75, -50);
+      heart.rotation.z = Math.random() * Math.PI;
+
+      heart.userData = {
+        speed: 0.8 + Math.random() * 1.5,
+        rotationSpeed: 0.05 + Math.random() * 0.05
+      };
+
+      scene.add(heart);
+      meteors.push(heart);
+    }
+
+    function spawnMeteors() {
+      if (Math.random() < 0.03) { // Xác suất xuất hiện
+        createHeartMeteor();
+      }
+    }
+
+    /* ------------------ INIT ------------------ */
     function init() {
       const w = innerWidth;
       const h = innerHeight;
@@ -204,6 +263,10 @@
 
       addHeartModel();
 
+      const light = new THREE.PointLight(0xff77ff, 1.5, 500);
+      light.position.set(50, 50, 100);
+      scene.add(light);
+
       composer = new EffectComposer(renderer);
       composer.addPass(new RenderPass(scene, camera));
 
@@ -227,12 +290,29 @@
       });
     }
 
+    /* ------------------ ANIMATE ------------------ */
     function animate() {
       requestAnimationFrame(animate);
       const t = clock.getElapsedTime();
       controls.update();
       stars.material.uniforms.time.value = t;
+
+      // Quay trái tim chính
       if (heartModel) heartModel.rotation.y += 0.01;
+
+      // Tạo thiên thạch
+      spawnMeteors();
+
+      // Cập nhật thiên thạch
+      meteors.forEach((m, i) => {
+        m.position.x += m.userData.speed * 2;
+        m.rotation.z += m.userData.rotationSpeed;
+        if (m.position.x > 200) {
+          scene.remove(m);
+          meteors.splice(i, 1);
+        }
+      });
+
       composer.render();
     }
 
